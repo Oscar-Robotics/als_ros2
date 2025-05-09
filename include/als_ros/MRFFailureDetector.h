@@ -25,7 +25,7 @@
 #include <iostream>
 #include <vector>
 
-#include <geometry_msgs/msg/vector3_stamped.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -49,7 +49,7 @@ class MRFFD : public rclcpp::Node
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr residualErrorsSub_;
 
     std::string failureProbName_, alignedScanName_, misalignedScanName_, unknownScanName_;
-    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr failureProbPub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr failureProbPub_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr alignedScanPub_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr misalignedScanPub_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr unknownScanPub_;
@@ -79,11 +79,14 @@ class MRFFD : public rclcpp::Node
     // results
     std::vector<std::vector<double>> measurementClassProbabilities_;
     double failureProbability_;
-    rclcpp::Time failureProbabilityStamp_;
+    bool inFailure_;
+    double failureProbabilityTreshold_;
+    double failureDurationThreshold_;
+    rclcpp::Time failureTimestamp_;
 
   public:
     MRFFD()
-        : Node("mrffd"), residualErrorsName_("/residual_errors"), failureProbName_("/failure_probability"),
+        : Node("mrffd"), residualErrorsName_("/residual_errors"), failureProbName_("/localization_failure"),
           alignedScanName_("/aligned_scan_mrf"), misalignedScanName_("/misaligned_scan_mrf"),
           unknownScanName_("/unknown_scan_mrf"), publishClassifiedScans_(true),
           failureProbabilityMarkerName_("/failure_probability_marker"), publishFailureProbabilityMarker_(true),
@@ -91,7 +94,8 @@ class MRFFD : public rclcpp::Node
           residualErrorReso_(0.05), minValidResidualErrorsNum_(10), maxResidualErrorsNum_(200),
           maxLPBComputationNum_(1000), samplingNum_(1000), misalignmentRatioThreshold_(0.1),
           unknownRatioThreshold_(0.7), transitionProbMat_({0.8, 0.0, 0.2, 0.0, 0.8, 0.2, 0.333333, 0.333333, 0.333333}),
-          canUpdateResidualErrors_(true), gotResidualErrors_(false), failureDetectionHz_(10.0)
+          canUpdateResidualErrors_(true), gotResidualErrors_(false), failureDetectionHz_(10.0), inFailure_(false),
+          failureProbabilityTreshold_(0.5), failureDurationThreshold_(5.0)
     {
         // input and output message names
         declare_parameter("residual_errors_name", residualErrorsName_);
@@ -143,7 +147,12 @@ class MRFFD : public rclcpp::Node
 
         // other parameters
         declare_parameter("failure_detection_hz", failureDetectionHz_);
+        declare_parameter("failure_probability_threshold", failureProbabilityTreshold_);
+        declare_parameter("failure_duration_threshold", failureDurationThreshold_);
+
         get_parameter("failure_detection_hz", failureDetectionHz_);
+        get_parameter("failure_probability_threshold", failureProbabilityTreshold_);
+        get_parameter("failure_duration_threshold", failureDurationThreshold_);
 
         // ros subscriber and publisher
         residualErrorsSub_ = create_subscription<sensor_msgs::msg::LaserScan>(
@@ -152,7 +161,7 @@ class MRFFD : public rclcpp::Node
                 this->residualErrorsCB(msg);
             }
         );            
-        failureProbPub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(failureProbName_, 1);
+        failureProbPub_ = create_publisher<std_msgs::msg::Bool>(failureProbName_, 1);
         if (publishClassifiedScans_)
         {
             alignedScanPub_ = create_publisher<sensor_msgs::msg::LaserScan>(alignedScanName_, 1);
@@ -164,6 +173,7 @@ class MRFFD : public rclcpp::Node
                 create_publisher<visualization_msgs::msg::Marker>(failureProbabilityMarkerName_, 1);
 
         // fixed parameters
+        NDVar_ = NDVar_ * NDVar_;
         NDNormConst_ = 1.0 / sqrt(2.0 * M_PI * NDVar_);
 
         // wait for getting the residual errors
@@ -286,11 +296,10 @@ class MRFFD : public rclcpp::Node
             usedScanIndices_.resize(maxResidualErrorsNum_);
             for (int i = 0; i < maxResidualErrorsNum_; ++i)
             {
-                int idx = rand() % (int)validResidualErrors.size();
+                // downsample scan evenly
+                int idx = (int)(i * ((double)validResidualErrorsSize / (double)maxResidualErrorsNum_));
                 usedResidualErrors_[i] = validResidualErrors[idx];
                 usedScanIndices_[i] = validScanIndices[idx];
-                validResidualErrors.erase(validResidualErrors.begin() + idx);
-                validScanIndices.erase(validScanIndices.begin() + idx);
             }
         }
 
@@ -303,10 +312,22 @@ class MRFFD : public rclcpp::Node
 
     void publishROSMessages(void)
     {
-        geometry_msgs::msg::Vector3Stamped failureProbability;
-        failureProbability.header.stamp = residualErrors_.header.stamp;
-        failureProbability.vector.x = failureProbability_;
-        failureProbPub_->publish(failureProbability);
+        std_msgs::msg::Bool failure;
+        failure.data = false;
+        if (failureProbability_ <= failureProbabilityTreshold_)
+        {
+            inFailure_ = false;
+        }
+        else if (!inFailure_)
+        {
+            inFailure_ = true;
+            failureTimestamp_ = this->now();
+        }
+        else if (this->now() - failureTimestamp_ > rclcpp::Duration::from_seconds(failureDurationThreshold_))
+        {
+            failure.data = true;
+        }
+        failureProbPub_->publish(failure);
 
         if (publishClassifiedScans_)
         {

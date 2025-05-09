@@ -35,7 +35,6 @@ int main(int argc, char **argv)
         node->predictFailureProbability();
         node->publishROSMessages();
         node->setCanUpdateResidualErrors(true);
-        node->printFailureProbability();
         loopRate.sleep();
     }
 
