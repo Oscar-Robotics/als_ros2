@@ -36,9 +36,9 @@ If you do not want to make a new workspace for als_ros, please copy the als_ros 
 
 Following messages (topics) are needed to be published; 
 
-- sensor_msgs::LaserScan (/scan)
-- nav_msgs::Odometry (/odom)
-- nav_msgs::OccupancyGrid (/map)
+- sensor_msgs::msg::LaserScan (/scan)
+- nav_msgs::msg::Odometry (/odom)
+- nav_msgs::msg::OccupancyGrid (/map)
 
 Names inside of the brackets are default topic names.
 
