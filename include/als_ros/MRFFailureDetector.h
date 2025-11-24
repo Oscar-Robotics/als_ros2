@@ -26,6 +26,7 @@
 #include <vector>
 
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float32.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -45,8 +46,9 @@ class MRFFD : public rclcpp::Node
 {
   private:
     // ros subscribers and publishers
-    std::string residualErrorsName_;
+    std::string residualErrorsName_, occlusionScoreName_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr residualErrorsSub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr occlusionScoreSub_;
 
     std::string failureProbName_, alignedScanName_, misalignedScanName_, unknownScanName_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr failureProbPub_;
@@ -60,7 +62,7 @@ class MRFFD : public rclcpp::Node
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr failureProbabilityMarkerPub_;
     bool publishFailureProbabilityMarker_;
 
-    // parametsrs
+    // parameters
     double maxResidualError_;
     double NDMean_, NDVar_, NDNormConst_, EDLambda_;
     int minValidResidualErrorsNum_, maxResidualErrorsNum_;
@@ -75,6 +77,7 @@ class MRFFD : public rclcpp::Node
     std::vector<int> usedScanIndices_;
     bool canUpdateResidualErrors_, gotResidualErrors_;
     double failureDetectionHz_;
+    double occlusionScore_;
 
     // results
     std::vector<std::vector<double>> measurementClassProbabilities_;
@@ -82,23 +85,27 @@ class MRFFD : public rclcpp::Node
     bool inFailure_;
     double failureProbabilityTreshold_;
     double failureDurationThreshold_;
+    double occlusionScoreThreshold_;
     rclcpp::Time failureTimestamp_;
 
   public:
     MRFFD()
-        : Node("mrffd"), residualErrorsName_("/residual_errors"), failureProbName_("/localization_failure"),
-          alignedScanName_("/aligned_scan_mrf"), misalignedScanName_("/misaligned_scan_mrf"),
-          unknownScanName_("/unknown_scan_mrf"), publishClassifiedScans_(true),
-          failureProbabilityMarkerName_("/failure_probability_marker"), publishFailureProbabilityMarker_(true),
-          markerFrame_("base_link"), NDMean_(0.0), NDVar_(0.04), EDLambda_(4.0), maxResidualError_(1.0),
+        : Node("mrffd"), residualErrorsName_("/residual_errors"), occlusionScoreName_("/occlusion_score"),
+          failureProbName_("/localization_failure"), alignedScanName_("/aligned_scan_mrf"),
+          misalignedScanName_("/misaligned_scan_mrf"), unknownScanName_("/unknown_scan_mrf"),
+          publishClassifiedScans_(true), failureProbabilityMarkerName_("/failure_probability_marker"),
+          publishFailureProbabilityMarker_(true), markerFrame_("base_link"),
+          NDMean_(0.0), NDVar_(0.04), EDLambda_(4.0), maxResidualError_(1.0),
           residualErrorReso_(0.05), minValidResidualErrorsNum_(10), maxResidualErrorsNum_(200),
           maxLPBComputationNum_(1000), samplingNum_(1000), misalignmentRatioThreshold_(0.1),
           unknownRatioThreshold_(0.7), transitionProbMat_({0.8, 0.0, 0.2, 0.0, 0.8, 0.2, 0.333333, 0.333333, 0.333333}),
-          canUpdateResidualErrors_(true), gotResidualErrors_(false), failureDetectionHz_(10.0), inFailure_(false),
-          failureProbabilityTreshold_(0.5), failureDurationThreshold_(5.0)
+          canUpdateResidualErrors_(true), gotResidualErrors_(false), failureDetectionHz_(10.0), occlusionScore_(0.0),
+          inFailure_(false), failureProbabilityTreshold_(0.5), failureDurationThreshold_(5.0),
+          occlusionScoreThreshold_(0.15)
     {
         // input and output message names
         declare_parameter("residual_errors_name", residualErrorsName_);
+        declare_parameter("occlusion_score_name", occlusionScoreName_);
         declare_parameter("failure_probability_name", failureProbName_);
         declare_parameter("publish_classified_scans", publishClassifiedScans_);
         declare_parameter("aligned_scan_mrf", alignedScanName_);
@@ -109,6 +116,7 @@ class MRFFD : public rclcpp::Node
         declare_parameter("marker_frame", markerFrame_);
 
         get_parameter("residual_errors_name", residualErrorsName_);
+        get_parameter("occlusion_score_name", occlusionScoreName_);
         get_parameter("failure_probability_name", failureProbName_);
         get_parameter("publish_classified_scans", publishClassifiedScans_);
         get_parameter("aligned_scan_mrf", alignedScanName_);
@@ -149,10 +157,12 @@ class MRFFD : public rclcpp::Node
         declare_parameter("failure_detection_hz", failureDetectionHz_);
         declare_parameter("failure_probability_threshold", failureProbabilityTreshold_);
         declare_parameter("failure_duration_threshold", failureDurationThreshold_);
+        declare_parameter("occlusion_score_threshold", occlusionScoreThreshold_);
 
         get_parameter("failure_detection_hz", failureDetectionHz_);
         get_parameter("failure_probability_threshold", failureProbabilityTreshold_);
         get_parameter("failure_duration_threshold", failureDurationThreshold_);
+        get_parameter("occlusion_score_threshold", occlusionScoreThreshold_);
 
         // ros subscriber and publisher
         residualErrorsSub_ = create_subscription<sensor_msgs::msg::LaserScan>(
@@ -160,7 +170,13 @@ class MRFFD : public rclcpp::Node
             [this](sensor_msgs::msg::LaserScan::SharedPtr msg) {
                 this->residualErrorsCB(msg);
             }
-        );            
+        );
+        occlusionScoreSub_ = create_subscription<std_msgs::msg::Float32>(
+            occlusionScoreName_, 1,
+            [this](std_msgs::msg::Float32::SharedPtr msg) {
+                this->occlusionScoreCB(msg);
+            }
+        );
         failureProbPub_ = create_publisher<std_msgs::msg::Bool>(failureProbName_, 1);
         if (publishClassifiedScans_)
         {
@@ -314,7 +330,7 @@ class MRFFD : public rclcpp::Node
     {
         std_msgs::msg::Bool failure;
         failure.data = false;
-        if (failureProbability_ <= failureProbabilityTreshold_)
+        if (failureProbability_ <= failureProbabilityTreshold_ || occlusionScore_ <= occlusionScoreThreshold_)
         {
             inFailure_ = false;
         }
@@ -403,6 +419,10 @@ class MRFFD : public rclcpp::Node
             residualErrors_ = *msg;
         if (!gotResidualErrors_)
             gotResidualErrors_ = true;
+    }
+    void occlusionScoreCB(const std_msgs::msg::Float32::SharedPtr &msg)
+    {
+        occlusionScore_ = msg->data;
     }
 
     inline double calculateNormalDistribution(double e)
