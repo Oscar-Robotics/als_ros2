@@ -27,6 +27,7 @@
 
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -55,7 +56,9 @@ class MRFFD : public rclcpp::Node
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr alignedScanPub_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr misalignedScanPub_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr unknownScanPub_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr relocalizationToggleSrv_;
 
+    bool relocalizationEnabled_;
     bool publishClassifiedScans_;
 
     std::string failureProbabilityMarkerName_, markerFrame_;
@@ -86,6 +89,8 @@ class MRFFD : public rclcpp::Node
     double failureProbabilityTreshold_;
     double failureDurationThreshold_;
     double occlusionScoreThreshold_;
+    double relocFailureDurationThreshold_;
+    double relocOcclusionScoreThreshold_;
     rclcpp::Time failureTimestamp_;
 
   public:
@@ -93,15 +98,15 @@ class MRFFD : public rclcpp::Node
         : Node("mrffd"), residualErrorsName_("/residual_errors"), occlusionScoreName_("/occlusion_score"),
           failureProbName_("/localization_failure"), alignedScanName_("/aligned_scan_mrf"),
           misalignedScanName_("/misaligned_scan_mrf"), unknownScanName_("/unknown_scan_mrf"),
-          publishClassifiedScans_(true), failureProbabilityMarkerName_("/failure_probability_marker"),
-          publishFailureProbabilityMarker_(true), markerFrame_("base_link"),
-          NDMean_(0.0), NDVar_(0.04), EDLambda_(4.0), maxResidualError_(1.0),
+          relocalizationEnabled_(false), publishClassifiedScans_(true),
+          failureProbabilityMarkerName_("/failure_probability_marker"), publishFailureProbabilityMarker_(true),
+          markerFrame_("base_link"), NDMean_(0.0), NDVar_(0.04), EDLambda_(4.0), maxResidualError_(1.0),
           residualErrorReso_(0.05), minValidResidualErrorsNum_(10), maxResidualErrorsNum_(200),
           maxLPBComputationNum_(1000), samplingNum_(1000), misalignmentRatioThreshold_(0.1),
           unknownRatioThreshold_(0.7), transitionProbMat_({0.8, 0.0, 0.2, 0.0, 0.8, 0.2, 0.333333, 0.333333, 0.333333}),
           canUpdateResidualErrors_(true), gotResidualErrors_(false), failureDetectionHz_(10.0), occlusionScore_(0.0),
           inFailure_(false), failureProbabilityTreshold_(0.5), failureDurationThreshold_(5.0),
-          occlusionScoreThreshold_(0.15)
+          occlusionScoreThreshold_(0.2), relocFailureDurationThreshold_(0.0), relocOcclusionScoreThreshold_(0.1)
     {
         // input and output message names
         declare_parameter("residual_errors_name", residualErrorsName_);
@@ -158,11 +163,15 @@ class MRFFD : public rclcpp::Node
         declare_parameter("failure_probability_threshold", failureProbabilityTreshold_);
         declare_parameter("failure_duration_threshold", failureDurationThreshold_);
         declare_parameter("occlusion_score_threshold", occlusionScoreThreshold_);
+        declare_parameter("reloc_failure_duration_threshold", relocFailureDurationThreshold_);
+        declare_parameter("reloc_occlusion_score_threshold", relocOcclusionScoreThreshold_);
 
         get_parameter("failure_detection_hz", failureDetectionHz_);
         get_parameter("failure_probability_threshold", failureProbabilityTreshold_);
         get_parameter("failure_duration_threshold", failureDurationThreshold_);
         get_parameter("occlusion_score_threshold", occlusionScoreThreshold_);
+        get_parameter("reloc_failure_duration_threshold", relocFailureDurationThreshold_);
+        get_parameter("reloc_occlusion_score_threshold", relocOcclusionScoreThreshold_);
 
         // ros subscriber and publisher
         residualErrorsSub_ = create_subscription<sensor_msgs::msg::LaserScan>(
@@ -187,6 +196,17 @@ class MRFFD : public rclcpp::Node
         if (publishFailureProbabilityMarker_)
             failureProbabilityMarkerPub_ =
                 create_publisher<visualization_msgs::msg::Marker>(failureProbabilityMarkerName_, 1);
+
+        relocalizationToggleSrv_ = this->create_service<std_srvs::srv::SetBool>(
+            "mrf/toggle_relocalization_mode",
+            [this](const std::shared_ptr<rmw_request_id_t> /*req_header*/,
+               const std::shared_ptr<std_srvs::srv::SetBool::Request> req,
+               std::shared_ptr<std_srvs::srv::SetBool::Response> resp) {
+            this->relocalizationEnabled_ = req->data;
+            resp->success = true;
+            resp->message = this->relocalizationEnabled_ ? "relocalization enabled" : "relocalization disabled";
+            }
+        );
 
         // fixed parameters
         NDVar_ = NDVar_ * NDVar_;
@@ -330,7 +350,13 @@ class MRFFD : public rclcpp::Node
     {
         std_msgs::msg::Bool failure;
         failure.data = false;
-        if (failureProbability_ <= failureProbabilityTreshold_ || occlusionScore_ <= occlusionScoreThreshold_)
+        double occlusionScoreThreshold = relocalizationEnabled_
+                                     ? relocOcclusionScoreThreshold_
+                                     : occlusionScoreThreshold_;
+        double failureDurationThreshold = relocalizationEnabled_
+                                     ? relocFailureDurationThreshold_
+                                     : failureDurationThreshold_;
+        if (failureProbability_ <= failureProbabilityTreshold_ || occlusionScore_ <= occlusionScoreThreshold)
         {
             inFailure_ = false;
         }
@@ -339,7 +365,7 @@ class MRFFD : public rclcpp::Node
             inFailure_ = true;
             failureTimestamp_ = this->now();
         }
-        else if (this->now() - failureTimestamp_ > rclcpp::Duration::from_seconds(failureDurationThreshold_))
+        else if (this->now() - failureTimestamp_ > rclcpp::Duration::from_seconds(failureDurationThreshold))
         {
             failure.data = true;
         }
