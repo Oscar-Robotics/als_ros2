@@ -18,6 +18,7 @@ set(dependencies
   # rospy
   sensor_msgs
   std_msgs
+  std_srvs
   tf2
   tf2_ros
   tf2_geometry_msgs
