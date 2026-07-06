@@ -95,11 +95,11 @@ class MRFFD : public rclcpp::Node
 
   public:
     MRFFD()
-        : Node("mrffd"), residualErrorsName_("/residual_errors"), occlusionScoreName_("/occlusion_score"),
-          failureProbName_("/localization_failure"), alignedScanName_("/aligned_scan_mrf"),
-          misalignedScanName_("/misaligned_scan_mrf"), unknownScanName_("/unknown_scan_mrf"),
+        : Node("mrffd"), residualErrorsName_("residual_errors"), occlusionScoreName_("occlusion_score"),
+          failureProbName_("localization_failure"), alignedScanName_("aligned_scan_mrf"),
+          misalignedScanName_("misaligned_scan_mrf"), unknownScanName_("unknown_scan_mrf"),
           relocalizationEnabled_(false), publishClassifiedScans_(true),
-          failureProbabilityMarkerName_("/failure_probability_marker"), publishFailureProbabilityMarker_(true),
+          failureProbabilityMarkerName_("failure_probability_marker"), publishFailureProbabilityMarker_(true),
           markerFrame_("base_link"), NDMean_(0.0), NDVar_(0.04), EDLambda_(4.0), maxResidualError_(1.0),
           residualErrorReso_(0.05), minValidResidualErrorsNum_(10), maxResidualErrorsNum_(200),
           maxLPBComputationNum_(1000), samplingNum_(1000), misalignmentRatioThreshold_(0.1),
