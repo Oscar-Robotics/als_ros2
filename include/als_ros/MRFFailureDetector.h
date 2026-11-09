@@ -311,7 +311,7 @@ class MRFFD : public rclcpp::Node
                 validResidualErrors.push_back(e);
                 validScanIndices.push_back(i);
             }
-            else if (e < 0.0 && isLidarReturn(residualErrors_.ranges[i]))
+            else if (isOffMapReturn(i))
             {
                 offMapReturnsNum++;
             }
@@ -457,9 +457,11 @@ class MRFFD : public rclcpp::Node
         occlusionScore_ = msg->data;
     }
 
-    inline bool isLidarReturn(float range)
+    inline bool isOffMapReturn(int i)
     {
-        return residualErrors_.range_min < range && range < residualErrors_.range_max;
+        float range = residualErrors_.ranges[i];
+        return residualErrors_.intensities[i] < 0.0 && !std::isnan(range) &&
+               residualErrors_.range_min < range && range < residualErrors_.range_max;
     }
 
     inline double calculateNormalDistribution(double e)
